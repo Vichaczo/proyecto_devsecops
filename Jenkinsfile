@@ -30,7 +30,12 @@ pipeline {
         stage('Security Test - Dependency-Check') {
             steps {
                 echo 'Analizando vulnerabilidades en dependencias con OWASP Dependency-Check...'
-                dependencyCheck additionalArguments: '-o "./" -s "./" -f "ALL" --prettyPrint --scan requirements.txt --disableNodeAudit --disableYarnAudit --disableCentral', odcInstallation: 'dependency-check'
+
+                dependencyCheck(
+                    odcInstallation: 'dependency-check',
+                    additionalArguments: '-o "./" -s "./" -f "ALL" --prettyPrint --scan requirements.txt --disableNodeAudit --disableYarnAudit --disableCentral --nvdApiDelay 10000 --nvdMaxRetryCount 10 --nvdValidForHours 24'
+                )
+
                 dependencyCheckPublisher pattern: 'dependency-check-report.xml'
             }
         }
@@ -38,20 +43,39 @@ pipeline {
         stage('Deploy') {
             steps {
                 echo 'Desplegando la aplicación en entorno de prueba...'
-                sh 'nohup ./venv/bin/python app.py > flask.log 2>&1 &'
-                sh 'sleep 3'
+
+                sh '''
+                    nohup ./venv/bin/python app.py > flask.log 2>&1 < /dev/null &
+
+                    for i in $(seq 1 15); do
+                        if curl -fsS "http://localhost:5000/hello?name=test" > /dev/null; then
+                            echo "Flask está disponible en el puerto 5000."
+                            exit 0
+                        fi
+
+                        echo "Esperando a que Flask inicie..."
+                        sleep 2
+                    done
+
+                    echo "ERROR: Flask no pudo iniciar."
+                    cat flask.log
+                    exit 1
+                '''
             }
         }
 
         stage('Security Test - OWASP ZAP') {
             steps {
                 echo 'Ejecutando escaneo dinámico (DAST) con OWASP ZAP...'
+
                 sh '''
-                    chmod -R 777 .
                     docker run --rm --network="host" \
-                    -v $(pwd):/zap/wrk/:rw \
+                    -v "$(pwd):/zap/wrk/:rw" \
                     ghcr.io/zaproxy/zaproxy:stable \
-                    zap-baseline.py -t http://localhost:5000/hello?name=test -r zap_report.html || true
+                    zap-baseline.py \
+                    -t "http://localhost:5000/hello?name=test" \
+                    -r zap_report.html \
+                    -I
                 '''
             }
         }
@@ -60,8 +84,13 @@ pipeline {
     post {
         always {
             echo 'Limpiando entorno y deteniendo servidor de pruebas...'
+
             sh 'pkill -f "python app.py" || true'
-            archiveArtifacts artifacts: 'zap_report.html, dependency-check-report.*', allowEmptyArchive: true
+
+            archiveArtifacts(
+                artifacts: 'zap_report.html, dependency-check-report.*, flask.log',
+                allowEmptyArchive: true
+            )
         }
     }
 }
