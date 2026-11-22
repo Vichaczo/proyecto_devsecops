@@ -6,21 +6,29 @@ pipeline {
         stage('Build') {
             steps {
                 echo 'Preparando entorno virtual e instalando dependencias...'
-                sh 'python3 -m venv venv'
-                sh './venv/bin/pip install -r requirements.txt'
+
+                sh '''
+                    python3 -m venv venv
+                    ./venv/bin/pip install --upgrade -r requirements.txt
+                '''
             }
         }
 
         stage('Test') {
             steps {
-                echo 'Ejecutando verificación básica de sintaxis...'
-                sh './venv/bin/python -m py_compile app.py'
+                echo 'Ejecutando verificación de sintaxis e importación de Flask...'
+
+                sh '''
+                    ./venv/bin/python -m py_compile app.py
+                    ./venv/bin/python -c "from flask import Flask; print('Flask importado correctamente')"
+                '''
             }
         }
 
         stage('Analyze') {
             steps {
                 echo 'Ejecutando análisis estático con SonarQube...'
+
                 withSonarQubeEnv('SonarQube') {
                     sh "${tool 'sonar-scanner'}/bin/sonar-scanner -Dsonar.projectKey=proyecto-devsecops -Dsonar.sources=. -Dsonar.exclusions=venv/**"
                 }
@@ -33,7 +41,8 @@ pipeline {
 
                 dependencyCheck(
                     odcInstallation: 'dependency-check',
-                    additionalArguments: '-o "./" -s "./" -f "ALL" --prettyPrint --scan requirements.txt --disableNodeAudit --disableYarnAudit --disableCentral --nvdApiDelay 10000 --nvdMaxRetryCount 10 --nvdValidForHours 24'
+                    nvdCredentialsId: 'nvd-api-key',
+                    additionalArguments: '-o "./" -s "./" -f "ALL" --prettyPrint --scan requirements.txt --disableNodeAudit --disableYarnAudit --disableCentral --nvdApiDelay 3500 --nvdMaxRetryCount 10 --nvdValidForHours 24'
                 )
 
                 dependencyCheckPublisher pattern: 'dependency-check-report.xml'
@@ -42,10 +51,13 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                echo 'Desplegando la aplicación en entorno de prueba...'
+                echo 'Desplegando la aplicación Flask en entorno de prueba...'
 
                 sh '''
+                    JENKINS_NODE_COOKIE=dontKillMe \
                     nohup ./venv/bin/python app.py > flask.log 2>&1 < /dev/null &
+
+                    echo $! > flask.pid
 
                     for i in $(seq 1 15); do
                         if curl -fsS "http://localhost:5000/hello?name=test" > /dev/null; then
@@ -69,13 +81,18 @@ pipeline {
                 echo 'Ejecutando escaneo dinámico (DAST) con OWASP ZAP...'
 
                 sh '''
+                    mkdir -p zap-reports
+                    chmod 777 zap-reports
+
                     docker run --rm --network="host" \
-                    -v "$(pwd):/zap/wrk/:rw" \
-                    ghcr.io/zaproxy/zaproxy:stable \
-                    zap-baseline.py \
-                    -t "http://localhost:5000/hello?name=test" \
-                    -r zap_report.html \
-                    -I
+                        -v "$(pwd)/zap-reports:/zap/wrk/:rw" \
+                        ghcr.io/zaproxy/zaproxy:stable \
+                        zap-baseline.py \
+                        -t "http://localhost:5000/hello?name=test" \
+                        -r zap_report.html \
+                        -I
+
+                    test -s zap-reports/zap_report.html
                 '''
             }
         }
@@ -85,10 +102,20 @@ pipeline {
         always {
             echo 'Limpiando entorno y deteniendo servidor de pruebas...'
 
-            sh 'pkill -f "python app.py" || true'
+            sh '''
+                if [ -f flask.pid ]; then
+                    PID=$(cat flask.pid)
+
+                    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+                        kill "$PID" 2>/dev/null || true
+                    fi
+
+                    rm -f flask.pid
+                fi
+            '''
 
             archiveArtifacts(
-                artifacts: 'zap_report.html, dependency-check-report.*, flask.log',
+                artifacts: 'zap-reports/zap_report.html, dependency-check-report.*, flask.log',
                 allowEmptyArchive: true
             )
         }
