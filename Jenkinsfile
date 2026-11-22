@@ -1,3 +1,4 @@
+
 pipeline {
     agent any
 
@@ -29,10 +30,10 @@ pipeline {
         stage('Security Test - Dependency-Check') {
             steps {
                 echo 'Analizando vulnerabilidades en dependencias con OWASP Dependency-Check...'
-                dependencyCheck additionalArguments: '-o "./" -s "./" -f "ALL" --prettyPrint --scan requirements.txt --disableNodeAudit --disableYarnAudit --nvdValidForHours 24', odcInstallation: 'dependency-check'
+                dependencyCheck additionalArguments: '-o "./" -s "./" -f "ALL" --prettyPrint --scan requirements.txt --disableNodeAudit --disableYarnAudit --disableCentral', odcInstallation: 'dependency-check'
                 dependencyCheckPublisher pattern: 'dependency-check-report.xml'
             }
-        } // <-- Aquí faltaba esta llave de cierre de los steps y la stage
+        }
 
         stage('Deploy') {
             steps {
@@ -46,6 +47,7 @@ pipeline {
             steps {
                 echo 'Ejecutando escaneo dinámico (DAST) con OWASP ZAP...'
                 sh '''
+                    chmod -R 777 .
                     docker run --rm --network="host" \
                     -v $(pwd):/zap/wrk/:rw \
                     ghcr.io/zaproxy/zaproxy:stable \
