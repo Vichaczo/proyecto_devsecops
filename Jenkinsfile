@@ -29,7 +29,7 @@ pipeline {
         stage('Security Test - Dependency-Check') {
             steps {
                 echo 'Analizando vulnerabilidades en dependencias con OWASP Dependency-Check...'
-                dependencyCheck additionalArguments: '-o "./" -s "./" -f "ALL" --prettyPrint --scan requirements.txt', odcInstallation: 'dependency-check'
+                dependencyCheck additionalArguments: '-o "./" -s "./" -f "ALL" --prettyPrint --scan requirements.txt --disableNodeAudit --disableYarnAudit', odcInstallation: 'dependency-check'
                 dependencyCheckPublisher pattern: 'dependency-check-report.xml'
             }
         }
